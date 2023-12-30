@@ -58,6 +58,7 @@
 #include "base/utils/compare.h"
 #include "base/utils/fs.h"
 #include "base/utils/misc.h"
+#include "base/utils/string.h"
 #include "lineedit.h"
 #include "torrenttagsdialog.h"
 
@@ -363,7 +364,7 @@ AddNewTorrentDialog::AddNewTorrentDialog(const BitTorrent::TorrentDescriptor &to
 
     connect(m_ui->categoryComboBox, &QComboBox::currentIndexChanged, this, &AddNewTorrentDialog::categoryChanged);
 
-    m_ui->tagsLineEdit->setText(m_torrentParams.tags.join(u", "_s));
+    m_ui->tagsLineEdit->setText(Utils::String::joinIntoString(m_torrentParams.tags, u", "_s));
     connect(m_ui->tagsEditButton, &QAbstractButton::clicked, this, [this]
     {
         auto *dlg = new TorrentTagsDialog(m_torrentParams.tags, this);
@@ -371,7 +372,7 @@ AddNewTorrentDialog::AddNewTorrentDialog(const BitTorrent::TorrentDescriptor &to
         connect(dlg, &TorrentTagsDialog::accepted, this, [this, dlg]
         {
             m_torrentParams.tags = dlg->tags();
-            m_ui->tagsLineEdit->setText(m_torrentParams.tags.join(u", "_s));
+            m_ui->tagsLineEdit->setText(Utils::String::joinIntoString(m_torrentParams.tags, u", "_s));
         });
         dlg->open();
     });
@@ -381,6 +382,12 @@ AddNewTorrentDialog::AddNewTorrentDialog(const BitTorrent::TorrentDescriptor &to
     m_filterLine->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     connect(m_filterLine, &LineEdit::textChanged, m_ui->contentTreeView, &TorrentContentWidget::setFilterPattern);
     m_ui->contentFilterLayout->insertWidget(3, m_filterLine);
+    const auto *focusSearchHotkey = new QShortcut(QKeySequence::Find, this);
+    connect(focusSearchHotkey, &QShortcut::activated, this, [this]()
+    {
+        m_filterLine->setFocus();
+        m_filterLine->selectAll();
+    });
 
     loadState();
 

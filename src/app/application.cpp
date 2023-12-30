@@ -57,7 +57,6 @@
 #include <QProgressDialog>
 #ifdef Q_OS_WIN
 #include <QSessionManager>
-#include <QSharedMemory>
 #endif // Q_OS_WIN
 #ifdef Q_OS_MACOS
 #include <QFileOpenEvent>
@@ -70,7 +69,6 @@
 #include "base/bittorrent/torrent.h"
 #include "base/exceptions.h"
 #include "base/global.h"
-#include "base/iconprovider.h"
 #include "base/logger.h"
 #include "base/net/downloadmanager.h"
 #include "base/net/geoipmanager.h"
@@ -93,7 +91,6 @@
 #include "upgrade.h"
 
 #ifndef DISABLE_GUI
-#include "gui/guiaddtorrentmanager.h"
 #include "gui/desktopintegration.h"
 #include "gui/mainwindow.h"
 #include "gui/shutdownconfirmdialog.h"
@@ -272,16 +269,17 @@ Application::Application(int &argc, char **argv)
     SettingsStorage::initInstance();
     Preferences::initInstance();
 
-    const bool firstTimeUser = !Preferences::instance()->getAcceptedLegal();
-    if (!firstTimeUser)
+    const bool firstTimeUser = SettingsStorage::instance()->isEmpty();
+    if (firstTimeUser)
+    {
+        setCurrentMigrationVersion();
+        handleChangedDefaults(DefaultPreferencesMode::Current);
+    }
+    else
     {
         if (!upgrade())
             throw RuntimeError(u"Failed migration of old settings"_s); // Not translatable. Translation isn't configured yet.
         handleChangedDefaults(DefaultPreferencesMode::Legacy);
-    }
-    else
-    {
-        handleChangedDefaults(DefaultPreferencesMode::Current);
     }
 
     initializeTranslation();
@@ -524,7 +522,7 @@ void Application::runExternalProgram(const QString &programTemplate, const BitTo
                 str.replace(i, 2, torrent->contentPath().toString());
                 break;
             case u'G':
-                str.replace(i, 2, torrent->tags().join(u","_s));
+                str.replace(i, 2, Utils::String::joinIntoString(torrent->tags(), u","_s));
                 break;
             case u'I':
                 str.replace(i, 2, (torrent->infoHash().v1().isValid() ? torrent->infoHash().v1().toString() : u"-"_s));
@@ -793,7 +791,6 @@ int Application::exec()
 
     Net::ProxyConfigurationManager::initInstance();
     Net::DownloadManager::initInstance();
-    IconProvider::initInstance();
 
     BitTorrent::Session::initInstance();
 #ifndef DISABLE_GUI
@@ -1335,7 +1332,6 @@ void Application::cleanup()
     Net::ProxyConfigurationManager::freeInstance();
     Preferences::freeInstance();
     SettingsStorage::freeInstance();
-    IconProvider::freeInstance();
     SearchPluginManager::freeInstance();
     Utils::Fs::removeDirRecursively(Utils::Fs::tempPath());
 

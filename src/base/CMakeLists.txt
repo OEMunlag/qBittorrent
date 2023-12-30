@@ -42,6 +42,7 @@ add_library(qbt_base STATIC
     bittorrent/torrentinfo.h
     bittorrent/tracker.h
     bittorrent/trackerentry.h
+    concepts/explicitlyconvertibleto.h
     concepts/stringable.h
     digest32.h
     exceptions.h
@@ -54,7 +55,6 @@ add_library(qbt_base STATIC
     http/responsegenerator.h
     http/server.h
     http/types.h
-    iconprovider.h
     indexrange.h
     interfaces/iapplication.h
     logger.h
@@ -86,6 +86,7 @@ add_library(qbt_base STATIC
     search/searchhandler.h
     search/searchpluginmanager.h
     settingsstorage.h
+    tag.h
     tagset.h
     torrentfileguard.h
     torrentfileswatcher.h
@@ -148,7 +149,6 @@ add_library(qbt_base STATIC
     http/responsebuilder.cpp
     http/responsegenerator.cpp
     http/server.cpp
-    iconprovider.cpp
     logger.cpp
     net/dnsupdater.cpp
     net/downloadhandlerimpl.cpp
@@ -176,6 +176,7 @@ add_library(qbt_base STATIC
     search/searchhandler.cpp
     search/searchpluginmanager.cpp
     settingsstorage.cpp
+    tag.cpp
     tagset.cpp
     torrentfileguard.cpp
     torrentfileswatcher.cpp

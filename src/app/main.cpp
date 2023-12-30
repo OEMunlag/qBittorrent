@@ -55,7 +55,6 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPen>
-#include <QPushButton>
 #include <QSplashScreen>
 #include <QTimer>
 
@@ -76,11 +75,12 @@ Q_IMPORT_PLUGIN(QICOPlugin)
 #include "base/logger.h"
 #include "base/preferences.h"
 #include "base/profile.h"
+#include "base/settingvalue.h"
 #include "base/version.h"
 #include "application.h"
 #include "cmdoptions.h"
+#include "legalnotice.h"
 #include "signalhandler.h"
-#include "upgrade.h"
 
 #ifndef DISABLE_GUI
 #include "gui/utils.h"
@@ -88,22 +88,91 @@ Q_IMPORT_PLUGIN(QICOPlugin)
 
 using namespace std::chrono_literals;
 
-void displayVersion();
-bool userAgreesWithLegalNotice();
-void displayBadArgMessage(const QString &message);
-void displayErrorMessage(const QString &message);
+namespace
+{
+    void displayBadArgMessage(const QString &message)
+    {
+        const QString help = QCoreApplication::translate("Main", "Run application with -h option to read about command line parameters.");
+#if defined(Q_OS_WIN) && !defined(DISABLE_GUI)
+        QMessageBox msgBox(QMessageBox::Critical, QCoreApplication::translate("Main", "Bad command line"),
+                           (message + u'\n' + help), QMessageBox::Ok);
+        msgBox.show(); // Need to be shown or to moveToCenter does not work
+        msgBox.move(Utils::Gui::screenCenter(&msgBox));
+        msgBox.exec();
+#else
+        const QString errMsg = QCoreApplication::translate("Main", "Bad command line: ") + u'\n'
+            + message + u'\n'
+            + help + u'\n';
+        fprintf(stderr, "%s", qUtf8Printable(errMsg));
+#endif
+    }
+
+    void displayErrorMessage(const QString &message)
+    {
+#ifndef DISABLE_GUI
+        if (QApplication::instance())
+        {
+            QMessageBox msgBox;
+            msgBox.setIcon(QMessageBox::Critical);
+            msgBox.setText(QCoreApplication::translate("Main", "An unrecoverable error occurred."));
+            msgBox.setInformativeText(message);
+            msgBox.show(); // Need to be shown or to moveToCenter does not work
+            msgBox.move(Utils::Gui::screenCenter(&msgBox));
+            msgBox.exec();
+        }
+        else
+        {
+            const QString errMsg = QCoreApplication::translate("Main", "qBittorrent has encountered an unrecoverable error.") + u'\n' + message + u'\n';
+            fprintf(stderr, "%s", qUtf8Printable(errMsg));
+        }
+#else
+        const QString errMsg = QCoreApplication::translate("Main", "qBittorrent has encountered an unrecoverable error.") + u'\n' + message + u'\n';
+        fprintf(stderr, "%s", qUtf8Printable(errMsg));
+#endif
+    }
+
+    void displayVersion()
+    {
+        printf("%s %s\n", qUtf8Printable(qApp->applicationName()), QBT_VERSION);
+    }
 
 #ifndef DISABLE_GUI
-void showSplashScreen();
+    void showSplashScreen()
+    {
+        QPixmap splashImg(u":/icons/splash.png"_s);
+        QPainter painter(&splashImg);
+        const auto version = QStringLiteral(QBT_VERSION);
+        painter.setPen(QPen(Qt::white));
+        painter.setFont(QFont(u"Arial"_s, 22, QFont::Black));
+        painter.drawText(224 - painter.fontMetrics().horizontalAdvance(version), 270, version);
+        QSplashScreen *splash = new QSplashScreen(splashImg);
+        splash->show();
+        QTimer::singleShot(1500ms, Qt::CoarseTimer, splash, &QObject::deleteLater);
+        qApp->processEvents();
+    }
 #endif  // DISABLE_GUI
 
 #ifdef Q_OS_UNIX
-void adjustFileDescriptorLimit();
+    void adjustFileDescriptorLimit()
+    {
+        rlimit limit {};
+
+        if (getrlimit(RLIMIT_NOFILE, &limit) != 0)
+            return;
+
+        limit.rlim_cur = limit.rlim_max;
+        setrlimit(RLIMIT_NOFILE, &limit);
+    }
 #endif
+}
 
 // Main
 int main(int argc, char *argv[])
 {
+#ifdef DISABLE_GUI
+    setvbuf(stdout, nullptr, _IONBF, 0);
+#endif
+
 #ifdef Q_OS_UNIX
     adjustFileDescriptorLimit();
 #endif
@@ -164,28 +233,6 @@ int main(int argc, char *argv[])
                                  .arg(u"-h (or --help)"_s));
         }
 
-        const bool firstTimeUser = !Preferences::instance()->getAcceptedLegal();
-        if (firstTimeUser)
-        {
-#ifndef DISABLE_GUI
-            if (!userAgreesWithLegalNotice())
-                return EXIT_SUCCESS;
-#elif defined(Q_OS_WIN)
-            if (_isatty(_fileno(stdin))
-                && _isatty(_fileno(stdout))
-                && !userAgreesWithLegalNotice())
-                return EXIT_SUCCESS;
-#else
-            if (!params.shouldDaemonize
-                && isatty(fileno(stdin))
-                && isatty(fileno(stdout))
-                && !userAgreesWithLegalNotice())
-                return EXIT_SUCCESS;
-#endif
-
-            setCurrentMigrationVersion();
-        }
-
         // Check if qBittorrent is already running
         if (app->hasAnotherInstance())
         {
@@ -193,7 +240,14 @@ int main(int argc, char *argv[])
             if (params.shouldDaemonize)
             {
                 throw CommandLineParameterError(QCoreApplication::translate("Main", "You cannot use %1: qBittorrent is already running.")
-                                     .arg(u"-d (or --daemon)"_s));
+                    .arg(u"-d (or --daemon)"_s));
+            }
+
+            // print friendly message if there are no other command line args
+            if (argc == 1)
+            {
+                const QString message = QCoreApplication::translate("Main", "Another qBittorrent instance is already running.");
+                printf("%s\n", qUtf8Printable(message));
             }
 #endif
 
@@ -203,20 +257,25 @@ int main(int argc, char *argv[])
             return EXIT_SUCCESS;
         }
 
-#ifdef Q_OS_WIN
-        // This affects only Windows apparently and Qt5.
-        // When QNetworkAccessManager is instantiated it regularly starts polling
-        // the network interfaces to see what's available and their status.
-        // This polling creates jitter and high ping with wifi interfaces.
-        // So here we disable it for lack of better measure.
-        // It will also spew this message in the console: QObject::startTimer: Timers cannot have negative intervals
-        // For more info see:
-        // 1. https://github.com/qbittorrent/qBittorrent/issues/4209
-        // 2. https://bugreports.qt.io/browse/QTBUG-40332
-        // 3. https://bugreports.qt.io/browse/QTBUG-46015
+        CachedSettingValue<bool> legalNoticeShown {u"LegalNotice/Accepted"_s, false};
+        if (params.confirmLegalNotice)
+            legalNoticeShown = true;
 
-        qputenv("QT_BEARER_POLL_TIMEOUT", QByteArray::number(-1));
-#endif // Q_OS_WIN
+        if (!legalNoticeShown)
+        {
+#ifndef DISABLE_GUI
+            const bool isInteractive = true;
+#elif defined(Q_OS_WIN)
+            const bool isInteractive = (_isatty(_fileno(stdin)) != 0) && (_isatty(_fileno(stdout)) != 0);
+#else
+            // when run in daemon mode user can only dismiss the notice with command line option
+            const bool isInteractive = !params.shouldDaemonize
+                && ((isatty(fileno(stdin)) != 0) && (isatty(fileno(stdout)) != 0));
+#endif
+            showLegalNotice(isInteractive);
+            if (isInteractive)
+                legalNoticeShown = true;
+        }
 
 #ifdef Q_OS_MACOS
         // Since Apple made difficult for users to set PATH, we set here for convenience.
@@ -279,117 +338,3 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 }
-
-#if !defined(DISABLE_GUI)
-void showSplashScreen()
-{
-    QPixmap splashImg(u":/icons/splash.png"_s);
-    QPainter painter(&splashImg);
-    const auto version = QStringLiteral(QBT_VERSION);
-    painter.setPen(QPen(Qt::white));
-    painter.setFont(QFont(u"Arial"_s, 22, QFont::Black));
-    painter.drawText(224 - painter.fontMetrics().horizontalAdvance(version), 270, version);
-    QSplashScreen *splash = new QSplashScreen(splashImg);
-    splash->show();
-    QTimer::singleShot(1500ms, Qt::CoarseTimer, splash, &QObject::deleteLater);
-    qApp->processEvents();
-}
-#endif  // DISABLE_GUI
-
-void displayVersion()
-{
-    printf("%s %s\n", qUtf8Printable(qApp->applicationName()), QBT_VERSION);
-}
-
-void displayBadArgMessage(const QString &message)
-{
-    const QString help = QCoreApplication::translate("Main", "Run application with -h option to read about command line parameters.");
-#if defined(Q_OS_WIN) && !defined(DISABLE_GUI)
-    QMessageBox msgBox(QMessageBox::Critical, QCoreApplication::translate("Main", "Bad command line"),
-                       (message + u'\n' + help), QMessageBox::Ok);
-    msgBox.show(); // Need to be shown or to moveToCenter does not work
-    msgBox.move(Utils::Gui::screenCenter(&msgBox));
-    msgBox.exec();
-#else
-    const QString errMsg = QCoreApplication::translate("Main", "Bad command line: ") + u'\n'
-        + message + u'\n'
-        + help + u'\n';
-    fprintf(stderr, "%s", qUtf8Printable(errMsg));
-#endif
-}
-
-void displayErrorMessage(const QString &message)
-{
-#ifndef DISABLE_GUI
-    if (QApplication::instance())
-    {
-        QMessageBox msgBox;
-        msgBox.setIcon(QMessageBox::Critical);
-        msgBox.setText(QCoreApplication::translate("Main", "An unrecoverable error occurred."));
-        msgBox.setInformativeText(message);
-        msgBox.show(); // Need to be shown or to moveToCenter does not work
-        msgBox.move(Utils::Gui::screenCenter(&msgBox));
-        msgBox.exec();
-    }
-    else
-    {
-        const QString errMsg = QCoreApplication::translate("Main", "qBittorrent has encountered an unrecoverable error.") + u'\n' + message + u'\n';
-        fprintf(stderr, "%s", qUtf8Printable(errMsg));
-    }
-#else
-    const QString errMsg = QCoreApplication::translate("Main", "qBittorrent has encountered an unrecoverable error.") + u'\n' + message + u'\n';
-    fprintf(stderr, "%s", qUtf8Printable(errMsg));
-#endif
-}
-
-bool userAgreesWithLegalNotice()
-{
-    Preferences *const pref = Preferences::instance();
-    Q_ASSERT(!pref->getAcceptedLegal());
-
-#ifdef DISABLE_GUI
-    const QString eula = u"\n*** %1 ***\n"_s.arg(QCoreApplication::translate("Main", "Legal Notice"))
-        + QCoreApplication::translate("Main", "qBittorrent is a file sharing program. When you run a torrent, its data will be made available to others by means of upload. Any content you share is your sole responsibility.") + u"\n\n"
-        + QCoreApplication::translate("Main", "No further notices will be issued.") + u"\n\n"
-        + QCoreApplication::translate("Main", "Press %1 key to accept and continue...").arg(u"'y'"_s) + u'\n';
-    printf("%s", qUtf8Printable(eula));
-
-    const char ret = getchar(); // Read pressed key
-    if ((ret == 'y') || (ret == 'Y'))
-    {
-        // Save the answer
-        pref->setAcceptedLegal(true);
-        return true;
-    }
-#else
-    QMessageBox msgBox;
-    msgBox.setText(QCoreApplication::translate("Main", "qBittorrent is a file sharing program. When you run a torrent, its data will be made available to others by means of upload. Any content you share is your sole responsibility.\n\nNo further notices will be issued."));
-    msgBox.setWindowTitle(QCoreApplication::translate("Main", "Legal notice"));
-    msgBox.addButton(QCoreApplication::translate("Main", "Cancel"), QMessageBox::RejectRole);
-    const QAbstractButton *agreeButton = msgBox.addButton(QCoreApplication::translate("Main", "I Agree"), QMessageBox::AcceptRole);
-    msgBox.show(); // Need to be shown or to moveToCenter does not work
-    msgBox.move(Utils::Gui::screenCenter(&msgBox));
-    msgBox.exec();
-    if (msgBox.clickedButton() == agreeButton)
-    {
-        // Save the answer
-        pref->setAcceptedLegal(true);
-        return true;
-    }
-#endif // DISABLE_GUI
-
-    return false;
-}
-
-#ifdef Q_OS_UNIX
-void adjustFileDescriptorLimit()
-{
-    rlimit limit {};
-
-    if (getrlimit(RLIMIT_NOFILE, &limit) != 0)
-        return;
-
-    limit.rlim_cur = limit.rlim_max;
-    setrlimit(RLIMIT_NOFILE, &limit);
-}
-#endif
